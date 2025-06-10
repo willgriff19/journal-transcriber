@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 import pickle
 import traceback
 import logging
@@ -57,30 +58,45 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
 def authenticate():
     """Handles authentication for Google and OpenAI services."""
     try:
-        creds = None
-        # The file token.pickle stores the user's access and refresh tokens
-        if os.path.exists('token.pickle'):
-            with open('token.pickle', 'rb') as token:
-                creds = pickle.load(token)
-        
-        # If there are no (valid) credentials available, let the user log in.
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                # For Railway deployment, we'll use service account credentials
-                if os.getenv("GOOGLE_CREDENTIALS"):
-                    creds = Credentials.from_authorized_user_info(
-                        json.loads(os.getenv("GOOGLE_CREDENTIALS")),
-                        SCOPES
+        # First try to use service account credentials (for Railway deployment)
+        if os.getenv("GOOGLE_CREDENTIALS"):
+            try:
+                credentials_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+                if "type" in credentials_dict and credentials_dict["type"] == "service_account":
+                    logger.info("Using service account credentials")
+                    creds = service_account.Credentials.from_service_account_info(
+                        credentials_dict,
+                        scopes=SCOPES
                     )
                 else:
+                    logger.info("Using OAuth credentials")
+                    creds = Credentials.from_authorized_user_info(
+                        credentials_dict,
+                        SCOPES
+                    )
+            except json.JSONDecodeError:
+                logger.error("Failed to parse GOOGLE_CREDENTIALS as JSON")
+                return None, None
+        else:
+            # Fall back to OAuth flow (for local development)
+            creds = None
+            if os.path.exists('token.pickle'):
+                with open('token.pickle', 'rb') as token:
+                    creds = pickle.load(token)
+            
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    if not os.path.exists('credentials.json'):
+                        logger.error("No credentials.json file found")
+                        return None, None
                     flow = InstalledAppFlow.from_client_secrets_file(
                         'credentials.json', SCOPES)
                     creds = flow.run_local_server(port=0)
-            # Save the credentials for the next run
-            with open('token.pickle', 'wb') as token:
-                pickle.dump(creds, token)
+                # Save the credentials for the next run
+                with open('token.pickle', 'wb') as token:
+                    pickle.dump(creds, token)
         
         # Initialize API clients
         gspread_client = gspread.authorize(creds)
